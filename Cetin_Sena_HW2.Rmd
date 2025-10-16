@@ -1,0 +1,596 @@
+---
+title: "Cetin_Sena_HW2"
+author: "Sena Cetin"
+date: "2024-10-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(ShortRead)
+library(ggplot2)
+```
+
+## 1. Next-generation Sequencing Data Analysis
+```{r}
+# parse FSTQ file
+fstq <- readFastq('/Users/senacetin/Downloads/hw2data/q1/hw2_q1_reads.fastq')
+```
+
+### 1. 
+Parse the FASTQ file hq1_reads.fastq and print a summary table with 100 rows, 
+one for each position along the read, and 7 columns defined as follows:
+
+(a) The count of A nucleotides across all reads at this position 
+(b) The count of C nucleotides across all reads at this position 
+(c) The count of G nucleotides across all reads at this position 
+(d) The count of T nucleotides across all reads at this position
+(e) The count of non A,C,G,T nucleotides across all reads at this position 
+(f) The count of Phred-scaled quality values < 20 across all reads at position
+(g) The count of Phred-scaled quality values >= 20 across all reads at position
+
+```{r}
+# create vector for each column 
+# (a) The count of A nucleotides across all reads at this position 
+A_reads <- alphabetByCycle(sread(fstq))[1,]
+#(b) The count of C nucleotides across all reads at this position 
+C_reads <- alphabetByCycle(sread(fstq))[2,]
+#(c) The count of G nucleotides across all reads at this position 
+G_reads <- alphabetByCycle(sread(fstq))[3,]
+#(d) The count of T nucleotides across all reads at this position
+T_reads <- alphabetByCycle(sread(fstq))[4,]
+#(e) The count of non A,C,G,T nucleotides across all reads at this position 
+non_reads <- c()
+for (i in 1:100) {
+  non_reads <- c(
+    non_reads, 
+    sum(alphabetByCycle(sread(fstq))[5:nrow(alphabetByCycle(sread(fstq))), i])
+    )
+}
+
+# qualities per cycle
+qual <- alphabetByCycle(quality(fstq))
+
+#(f) The count of Phred quality values < 20 across all reads at this position
+# take sum of those up to "4" (score 19; row 21) for each col
+lowqual <- c()
+for (i in 1:100) {
+  lowqual <- c(
+    lowqual,
+    sum(qual[1:21, i])
+    )
+}
+
+#(g) The count of Phred quality values >= 20 across all reads at this position
+highqual <- c()
+for (i in 1:100) {
+  highqual <- c(
+    highqual,
+    sum(qual[22:nrow(qual), i])
+    )
+}
+
+# build tibble of vectors
+NGS_summary <- tibble(
+  A_reads,
+  C_reads, 
+  G_reads,
+  T_reads,
+  non_reads,
+  lowqual,
+  highqual
+)
+print(NGS_summary)
+```
+
+### 2. 
+Analyze the distribution of nucleotides per position in the sequence by plotting
+the frequency of each nucleotide versus its position in this alignment. Do you 
+see anything suspicious occurring during the 67th cycle?
+```{r}
+# pivot summary to long format
+NGS_dist = NGS_summary[,1:4] %>% 
+  mutate(Position = c(1:100)) %>% 
+  pivot_longer(
+    cols = ends_with("_reads"), 
+    names_to = "Base", 
+    values_to = "Frequency"
+  )
+
+ggplot(NGS_dist, aes(x = Position, y = Frequency, color = Base)) + 
+  geom_line(stat = "identity") +
+  labs(
+    title = "Nucleotide Frequency by Position",
+    y = "Nucleotide Frequency (bp)",
+    x = "Position in Read (bp)"
+    ) +
+  theme_linedraw()
+
+
+```
+There is a huge drop in a, c, g, t reads at cycle 67. Upon observing the data
+at cycle 67, most of the reads are "N" and are low quality.
+
+### 3. 
+Plot the number of quality values < 20 as a function of position along the read.
+What trend do you observe? What do you think causes this trend?
+```{r}
+# plots position vs count of low quality reads
+lowqual_position <- NGS_summary[,6] %>% 
+  mutate(Position = c(1:100))
+ggplot(lowqual_position, aes(x = Position, y = lowqual)) + 
+  geom_line() +
+  labs(
+    title = "Number of Low Quality Reads (< 20) by Position",
+    y = "Number of Quality Values < 20",
+    x = "Position in Read (bp)"
+    ) +
+  theme_linedraw()
+
+```
+The amount of quality values < 20 increases with the cycles. There are many
+reasons why the quality of NGS reads decreases over cycles, including the desyn-
+chronization of the cycle (could be due to improper base addition or the poly-
+merase stalling) which can produce unclear fluorescent signals from individual
+clusters. There is also a huge spike around cycle 67; the non A, C, G, T reads
+seem to be of bad quality. 
+
+### 4. 
+For each of the 1,000 reads, calculate the mean quality score across all 100 
+positions. Plot a histogram of the 1,000 average quality scores. Do you think 
+the distribution of average quality scores across sequencing reads is good or 
+bad, and why?
+```{r}
+# matrix with rows as reads and columns as positions
+qual_scores = as(quality(fstq), "matrix")
+
+# take mean row-wise 
+avg_qual_scores = apply(qual_scores, 1, mean)
+
+hist(
+  avg_qual_scores, 
+  breaks = 25,
+  main = "Average Quality Scores For Each Read",
+  xlab = "Average Quality Score",
+  ylab = "Frequency"
+  )
+
+```
+
+The distribution of average quality scores across sequencing reads is good be-
+cause the majority of the reads have high average quality scores (>30). PHRED 
+scores are calulated as the log of the probability of an erronous base call
+multiplied by -10. As most of the quality scores are between 30 and 40, the 
+probability of error in these reads is between 0.001 and 0.0001. 
+
+## 2. RNAseq Analysis – Normalizing by RPKM and TPM
+
+### 1. 
+Based on the raw counts (i.e., unnormalized data), what gene is expressed higher
+in sample 1 and sample 2? Is Gene1 expressed higher in sample 1 or sample 2?
+```{r}
+rnaseq_unnorm <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw2data/q2/rnaseq_normalization.txt",
+    header = TRUE
+    )
+  )
+
+print(paste("Based on raw counts,", 
+            rnaseq_unnorm %>% 
+              filter(Sample == "S1") %>% 
+              slice_max(NumberOfReads) %>% 
+              pull(Gene), 
+            "is expressed higher in S1"
+            )
+      )
+
+print(paste("Based on raw counts,", 
+            rnaseq_unnorm %>% 
+              filter(Sample == "S2") %>% 
+              slice_max(NumberOfReads) %>% 
+              pull(Gene), 
+            "is expressed higher in S2"
+            )
+      )
+
+print(paste("Based on raw counts, Gene1 is expressed higher in", 
+            rnaseq_unnorm %>% 
+              filter(Gene == "Gene1") %>% 
+              slice_max(NumberOfReads) %>% 
+              pull(Sample)
+            )
+      )
+```
+
+### 2. 
+For each gene in each sample, calculate RPKM and TPM and output the values in a 
+table that contains the columns:
+  Sample: whether the row corresponds to S1 or S2
+  Gene: whether the gene corresponds to Gene1 or Gene2 
+  RPKM: the RPKM value of Gene i in Sample i
+  TPM: the TPM value of Gene i in Sample i
+  
+```{r}
+# treat each sample separately
+rna_norm_S1 <- rnaseq_unnorm %>% 
+  filter(Sample == "S1")
+rna_norm_S2 <- rnaseq_unnorm %>% 
+  filter(Sample == "S2")
+
+# Library size S in M
+LIBSIZE_S1 <- sum(rna_norm_S1$NumberOfReads) / (10^6)
+LIBSIZE_S2 <- sum(rna_norm_S2$NumberOfReads) / (10^6)
+
+# mutates RPKM and TPM for both samples
+rna_norm_S1 <- rna_norm_S1 %>% 
+  mutate(RPKM = NumberOfReads/(LIBSIZE_S1 * GeneLength/1000)) %>% 
+  mutate(TPM = (10^6 * RPKM) / sum(rna_norm_S1$RPKM))
+rna_norm_S2 <- rna_norm_S2 %>% 
+  mutate(RPKM = NumberOfReads/(LIBSIZE_S2 * GeneLength/1000)) %>% 
+  mutate(TPM = (10^6 * RPKM) / sum(rna_norm_S2$RPKM))
+
+# returns tibble with cols sample, gene, RPKM, TPM for both samples
+rna_norm <- bind_rows(
+  rna_norm_S1 %>% 
+    select(Sample, Gene, RPKM, TPM),
+  rna_norm_S2 %>% 
+    select(Sample, Gene, RPKM, TPM)
+)
+print(rna_norm)
+```
+  
+  Using RPKM, answer the same questions in (1) and indicate if any of the 
+results are different and, if so, why. Qs: what gene is expressed higher in 
+sample 1 and sample 2? Is Gene1 expressed higher in sample 1 or sample 2?
+
+```{r}
+print(paste("Based on RPKM,", 
+            rna_norm %>% 
+              filter(Sample == "S1") %>% 
+              slice_max(RPKM) %>% 
+              pull(Gene), 
+            "is expressed higher in S1"
+            )
+      )
+
+print(paste("Based on RPKM,", 
+            rna_norm %>% 
+              filter(Sample == "S2") %>% 
+              slice_max(RPKM) %>% 
+              pull(Gene), 
+            "is expressed higher in S2"
+            )
+      )
+
+print(paste("Based on RPKM, Gene1 is expressed higher in", 
+            rna_norm %>% 
+              filter(Gene == "Gene1") %>% 
+              slice_max(RPKM) %>% 
+              pull(Sample)
+            )
+      )
+```
+Upon normalizing the reads by transcript length and # obtained sequences, we can
+observe the following differences between expression with respect to raw counts 
+vs RPKM:
+  - In S1, Gene 1 is expressed higher based on raw counts, whereas Gene 2 is on 
+    RPKM.
+  - In S2, Gene2 is expressed higher with respect to both raw counts and RPKM.
+  - Gene1 is expressed higher in S2 based on raw counts but higher in S1 based 
+    on RPKM. 
+
+Gene 1 is much longer than Gene 2, so the raw counts do not give an accurate 
+representation of the transcript level. 
+
+### 3.
+Compare the RPKM and TPM values for Gene1 and Gene2 between samples S1 and S2. 
+What do you observe? Briefly discuss the advantages and disadvantages of using 
+TPM versus RPKM for RNAseq data normalization. Which metric do you believe 
+better reflects gene expression when comparing across samples?
+
+```{r}
+print(rna_norm)
+```
+
+With RPKM, you normalize first for sequencing depth, and then for gene length.
+RPKM would be advantageous if you are comparing the expression between
+many different genes in one sample.
+With TPM, you normalize first for gene length and then sequencing depth. 
+You can appreciate that the TPMs for each sample add up to 1M, so you can com-
+pare how the proportion of expression changes for genes in the two samples. 
+
+## 3. RNA-Seq Analysis
+### 1. 
+Use the edgeR package to test whether genes are differentially expressed between
+the ethanol (E) and glucose (G) conditions.
+```{r}
+library(locfit)
+library(edgeR)
+
+rnaseq <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw2data/q3/RNA_Seq.txt",
+    header = TRUE
+  )
+)
+
+# assign groups to E and G 
+group <- factor(c(1, 1, 2, 2))
+y <- DGEList(counts = rnaseq, group = group)
+
+#y <- normLibSizes(y) #-- data already normalized
+
+# form design matrix
+design <- model.matrix(~group)
+y <- estimateDisp(y, design)
+
+# y$common.dispersion + sd(rnaseq$E2)/mean(rnaseq$E2)
+
+fit <- glmQLFit(y,design)
+qlf <- glmQLFTest(fit, coef = 2)
+
+hist(
+  qlf$table$PValue, 
+  freq = FALSE, 
+  breaks = 15,
+  main = "P-value Distribution for RNA-seq DE",
+  xlab = "P-value")
+```
+
+### 2. 
+edgeR calculates a p-value for each gene, but when you have multiple p-values 
+you need to adjust p-values for the number of hypothesis tests performed.
+
+#### (a) 
+In 1-2 sentences, why is this necessary for this experiment?
+  
+  The more hypothesis tests performed, the higher the probability of FPs (Type I 
+error). P-values are adjusted to lower the threshold to declare significance in 
+order to control FP rate. 
+
+#### (b) 
+Now use the qvalue package (the same package you used in homework 1) to
+calculate q-values from the p-values, and find the number of genes that are 
+significant at a FDR of 5% (i.e. the number of genes with a q-value <= 0.05).
+```{r}
+library(qvalue)
+
+qvals = qvalue(qlf$table$PValue)$qvalues
+significant = qvals[qvals <= 0.05]
+print(paste("Number of genes significant at FDR of 5%:", length(significant)))
+```
+
+#### (c) 
+Use qvalue to estimate pi.0 in this data set and provide a one sentence
+interpretation of what this pi.0 means.
+
+```{r}
+# pi0 corresponds to the proportion of truly null tests. 
+pi_0 = qvalue(qlf$table$PValue)$pi0
+print(paste("pi0 = ", pi_0))
+```
+
+### 3. 
+edgeR also calculates the log fold change (logFC) between G and E for each gene.
+Show a histogram of the distribution of log fold changes. What is the most 
+overexpressed gene in E relative to G? What is the most overexpressed gene in 
+G relative to E?
+
+```{r}
+hist(
+  qlf$table$logFC, 
+  breaks = 25,
+  main = "Distribution of Log-fold Change between G and E for Each Gene",
+  xlab = "Log-fold Change between G and E for Each Gene"
+  )
+
+# most overexpressed gene in E relative to G
+print(paste(
+  "The most overexpressed gene in E relative to G is",
+  topTags(qlf)$table %>% 
+    slice_max(logFC) %>%
+    pull(GeneName)
+  )
+)
+
+# most overexpressed gene in G relative to E
+print(paste(
+  "The most overexpressed gene in G relative to E is",
+  topTags(qlf)$table %>% 
+    slice_min(logFC) %>%
+    pull(GeneName)
+  )
+)
+
+```
+
+### 4. 
+
+```{r}
+sig_dif <- tibble(
+  qlf$genes,
+  qlf$table
+)
+
+# perform Bonferroni corrections and add to tibble
+m = nrow(sig_dif)
+corr_pvals = c()
+for (i in 1:m) {
+  corr_pvals <- append(corr_pvals, min((m * sig_dif$PValue[i]), 1))
+}
+
+# filter for those significantly differential
+sig_dif <- sig_dif %>% 
+  mutate(BonferroniPvalue = corr_pvals) 
+n_sig_diff = sig_dif %>% 
+  filter(BonferroniPvalue < 0.05 & logFC > 0.5) %>% 
+  nrow()
+
+print(
+  paste("Only", n_sig_diff, "genes meet both thresholds.")
+  )
+
+```
+
+Since only 2 genes were found to be significantly differentially expressed, 
+yeast likely rely on similar genes when using glucose or ethanol as a carbon
+source. This number might also just be low because the Bonferroni-corrections
+are too harsh; you can lose significant inferences you can make in an attempt
+to get rid of false positives. 
+
+### 5. 
+Use the R graphing package ggplot2 with option ’geom text’ to create a plot with
+the logFC on the x-axis, the log of the Bonferroni-corrected p-value on the 
+y-axis, and the names (not just dots) of each of the 174 genes on the graph. 
+What does this plot suggest is the relationship between effect size (logFC) and 
+significance?
+
+```{r}
+ggplot(sig_dif, aes(x = sig_dif$logFC, y = log10(sig_dif$BonferroniPvalue))) +
+  geom_text(aes(label = GeneName), size = 2, vjust = 1.1, hjust = 1.1) +
+  geom_point(size = 1) +
+   labs(
+    title = "Effect Size (LogFC) vs Significance (Log Adjusted P-value)",
+    y = "Log Bonferroni-Corrected P-value",
+    x = "Log Fold Change"
+    ) +
+  theme_minimal()
+
+# As effect size increases (|logFC|), so does the statistical significance 
+# (smaller p-value).
+
+```
+ 
+
+##4. Population Genetics
+### 1. 
+Write code to determine the number of segregating sites, S, in populations 1 
+and 2.
+```{r}
+# imports as matrix 
+pop1_import <- unlist(
+  str_split(
+    scan(
+      "/Users/senacetin/Downloads/hw2data/q4/pop1.txt", 
+      what = "character", 
+      sep = ""
+      ),
+    ""
+    )
+  )
+# 21 haplotypes
+pop1 <- matrix(pop1_import, ncol = 21, byrow = TRUE)
+
+pop2_import <- unlist(
+  str_split(
+    scan(
+      "/Users/senacetin/Downloads/hw2data/q4/pop2.txt", 
+      what = "character", 
+      sep = ""
+      ),
+    ""
+    )
+  )
+# 14 haplotypes
+pop2 <- matrix(pop2_import, ncol = 14, byrow = TRUE)
+
+# find number of unique values in each column
+alleles_pop1 = apply(pop1, 2, function(x) length(unique(x)))
+alleles_pop2 = apply(pop2, 2, function(x) length(unique(x)))
+
+# count those that are 2 (polymorphic)
+S_pop1 = sum(alleles_pop1 == 2)
+S_pop2 = sum(alleles_pop2 == 2)
+
+print(paste("The number of segregating sites in population 1 is", S_pop1))
+print(paste("The number of segregating sites in population 2 is", S_pop2))
+
+```
+
+### 2. 
+For each population, calculate a per nucleotide estimate of thetaW and pi (i.e.,
+divide thetaW and pi by the number of bps sequenced in the region).
+```{r}
+# calculate thetaW for each population
+nucleotide_count = 10000
+n = 100
+thetaW_pop1 <- S_pop1 / sum(1 / (1 : (n-1)))
+thetaW_pop2 <- S_pop2 / sum(1 / (1 : (n-1)))
+
+# calculate allele frequencies for each i th segregating site S
+# for each column, calculate frequency of 0; pull polymorphic ones
+freq_pop1 = apply(pop1, 2, function(x) sum(x == 0)) / 100
+freq_pop1 <- freq_pop1[freq_pop1 != 0 & freq_pop1 != 1]
+freq_pop2 = apply(pop2, 2, function(x) sum(x == 0)) / 100
+freq_pop2 <- freq_pop2[freq_pop2 != 0 & freq_pop2 != 1]
+
+# calculates pi for each population
+pi_pop1 = (n / (n-1)) * sum(2 * freq_pop1[1:S_pop1] * (1 - freq_pop1[1:S_pop1]))
+pi_pop2 = (n / (n-1)) * sum(2 * freq_pop2[1:S_pop2] * (1 - freq_pop2[1:S_pop2]))
+
+# normalize per nucleotide
+thetaW_pop1_norm = thetaW_pop1/nucleotide_count
+pi_pop1_norm = pi_pop1/nucleotide_count
+thetaW_pop2_norm = thetaW_pop2/nucleotide_count
+pi_pop2_norm = pi_pop2/nucleotide_count
+
+# calculates per nucleotide estimates and prints
+print(paste(
+  "The estimates of thetaW and pi for pop 1 are", 
+  thetaW_pop1_norm,
+  "and",
+  pi_pop1_norm,
+  "respectively."
+  )
+)
+
+print(paste(
+  "The estimates of thetaW and pi for pop 2 are", 
+  thetaW_pop2_norm,
+  "and",
+  pi_pop2_norm,
+  "respectively."
+  )
+)
+
+```
+
+### 3. 
+Calculate the statistic D = pi - thetaW for each population.
+
+```{r}
+D_pop1 = pi_pop1_norm - thetaW_pop1_norm
+D_pop2 = pi_pop2_norm - thetaW_pop2_norm
+print(paste("D for population 1: ", D_pop1))
+print(paste("D for population 2: ", D_pop2))
+```
+
+### 4. 
+Use your estimates of thetaW to estimate Ne in each population. Note that for 
+this problem, you can assume that the mutation rate u is equal to 1 × 10-8 per 
+site per generation.
+
+```{r}
+u = 1 * 10^(-8) # mutation rate u
+
+# Ne = thetaW / 4u 
+Ne_pop1 = thetaW_pop1_norm / (4 * u)
+Ne_pop2 = thetaW_pop2_norm / (4 * u)
+
+print(paste("The effective population size Ne for pop1 is", Ne_pop1))
+print(paste("The effective population size Ne for pop2 is", Ne_pop2))
+```
+
+###5. 
+Based on the data in 1-4, do you think Ne is the same or different between popu-
+lation’s 1 and 2? What aspects of the data are most informative when arriving at
+your answer?
+
+Ne, the effective population size, is greater for population 1. It is determined 
+by the mutation rate mu and thetaW, the expected number of mutations between two
+randomly selected chromosomes. As the Watterson's estimator theta is greater for
+population 1, we can expect more genetic diversity and therefore a greater 
+effective population size Ne (larger population retains more genetic diversity). 

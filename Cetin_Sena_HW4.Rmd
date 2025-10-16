@@ -1,0 +1,731 @@
+---
+title: "Cetin_Sena_HW4"
+author: "Sena Cetin"
+date: "2024-11-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+```
+
+## 1. ChIP-seq analysis
+In this problem, you will analyze a ChIP-Seq dataset for the transcription factor
+Oct4 in mouse ES cells using Galaxy, an open source, web-based platform. You will
+map the reads to the reference genome to get position data and filter out the 
+unmapped reads, identify clusters of reads (peaks), and find sequence motifs that
+are overrepresented in the data. Start early on this problem, as running the 
+necessary steps on the Galaxy server can take a while.
+
+### 1.1 Short answer question
+Your laboratory just finished sequencing the first genome for a fly species, and
+the next step is to annotate it. You are interested in determining the enhancers
+of this fly species using ChIP-Seq. 
+Describe the general ChIP-Seq experimental procedure to map histone modifications
+in the genome.
+
+  DNA is crosslinked to histones and fragmented. Fragments with histone modifica-
+tion are precipitated using antibodies targeting specific histone modifications 
+(e.g. acetylation, methylation). The DNA fragments that were precipitated are 
+then sequenced using NGS. Sequences are then mapped to genome and peaks are called
+to identify areas of the genome that are enriched with histone modifications. 
+
+### 1.2 Create a Galaxy account
+Go to https://usegalaxy.org/ and create a free account. Verify your email address
+in order to activate the account.
+
+### 1.3 Import the data
+You will examine ChIP-Seq data obtained by Chen et al. in their study Integration
+of External Signaling Pathways with the Core Transcriptional Network in Embryonic
+Stem Cells, Cell 2008 (link). You will focus on one transcription factor – Oct4.
+
+#### 1. 
+Read the paper’s experimental procedures section and briefly describe (in 3-4 
+sentences) how the data was generated.
+
+  ChIP-seq data was produced by crosslinking DNA to proteins w/ formaldehyde, 
+sonicating to produce 500 bp fragments, immunoprecipitating with the TFs and co-
+regulators of interest and sequencing. Once peaks were obtained and filtered, 
+binding regions were iteratively clustered by distance to identify MTLs and gene-
+rated colocalization vectors between TFBSs and coregulator sites which were clus-
+tered by PCC. K-means clustering based on distance to TSS to group gene-TF asso-
+ciations was performed and enriched genes were identified. 
+
+#### 2. 
+Log in to Galaxy. Load the file SRR002012.fastq.gz from the hw4data folder into
+the "History" panel on the right side of the page – this is where your datasets 
+and results are stored. Use the default settings. Once the data is loaded, click
+on the file name. What is the reported file format?
+
+  The reported file format is fastqsanger.gz.
+
+### 1.4 Groom the data
+On the left side of the page is the "Tools" panel. Search for the "FASTQ Groomer"
+tool.
+#### 1. 
+Choose Sanger & Illumina 1.8+ as the Input FASTQ quality scores type and run the
+tool. When it is done running, click on the result to examine the data. How many
+reads are there, and how big is the resulting file?
+
+  There are 5,898,008 reads and the file is 534.7 MB. 
+
+### 1.5 QC/Statistics on the raw data
+On the left side "Tools" panel, search for the “Compute quality statistics” tool.
+Run the tool. Click on the result to examine the data.
+
+#### 1. 
+What is the read length of the experiment?
+
+  The read length is 26 bases.
+  
+#### 2. 
+The "mean" column represents the mean quality for each position of the read (note
+that the headers in the resulting text file might be slightly misaligned). Plot 
+the mean quality for each position using R.
+
+```{r}
+qual_stats <- read_table("/Users/senacetin/Documents/Galaxy3-[quality_stats].txt") 
+plot(qual_stats$mean, 
+     xlab = "Position (bp)", 
+     ylab = "Mean Quality Score",
+     main = "Mean Quality Score by Read Position"
+  )
+
+```
+
+#### 3.
+Do you see a trend in your plot? Why do you think this is, and what does this say
+about the quality of the experiment?
+
+  The quality of the reads drop as the cycles increase, which means that the 
+fluorescent signal is getting less clear by position. This could be due to many 
+reasons, including the desynchronization of the cycle (could be due to improper 
+base addition or the polymerase stalling) which can produce unclear fluorescent 
+signals from individual clusters. But a decreasing quality score this early in 
+the read could indicate that the DNA fragments are too short which causes issues
+in cluster generation. 
+
+### 1.6 Map the reads to the reference genome
+On the left side "Tools" panel, search for the “Bowtie2” tool. Adjust the settings
+as follows:
+  • We are using a "single-end" library
+  • The FASTQ file should be your Groomer output
+  • Use a built-in genome index
+  • Select "mm9 Canonical" as your reference genome
+  • For analysis mode, select "Full parameter list". As you can see, this program 
+    has lots of parameters!
+      We will only change one:
+        – Tweak alignment options: change the -score_min parameter so that the 
+        function governing the minimum alignment score needed for an alignment 
+        to be considered "valid" is L,0,-0.2
+Run the tool. The output should be in BAM format, containing all reads (mapped 
+and not mapped), along with flags indicating whether the read is mapped, quality
+values, and genomic coordinates for mapped reads. Look at the results by clicking
+on the eye icon.
+
+For the following steps, we are only interested in the mapped reads. To filter 
+unmapped reads, search for the "BAM filter" tool on the left side "Tools" panel.
+Keep only mapped reads. Run the tool.
+
+#### 1. How many mapped reads are there?
+
+  There are 2,408,384 mapped reads
+
+#### 2. What is the percentage of mapped reads for this experiment?
+
+  40.83% of reads were mapped.
+
+### 1.7 Peak calling with MACS
+On the left side "Tools" panel, search for the “MACS2 callpeak” tool. Select 
+your filtered BAM file as input. Note: For this exercise, to keep it simple we 
+will run peak calling without providing a control/input. For a real analysis, 
+you would need to provide a control dataset.
+
+#### 1. What differences could the lack of control set introduce?
+
+  ChIP-seq peaks are normally called based on enrichment compared to a control. 
+  
+- A peak may be overrepresented if it is also prevalent in the control (e.g. common 
+or repetitive sequences). 
+
+- A peak may be underrepresented if it doesn't appear a lot in the control but is 
+still significantly enriched in the experimental dataset. 
+
+Set the effective genome size to be appropriate for our reference genome by using
+the value for M. musculus.
+This value is smaller than the complete genome because many regions are excluded
+(telomeres, highly repeated regions, etc.). Run the tool.
+
+#### 1. 
+Examine the resulting Browser Extensible Data (BED) file. How many peaks (regions) 
+were detected by MACS2?
+
+  MACS2 detected 691 peaks 
+
+### 1.8 Extract the peak sequences
+To get the sequences from the BED file, use the "Extract genomic DNA" tool from 
+the left side "Tools" panel. Save the resulting FASTA file to your computer.
+
+#### 1. What is the sequence of the first peak?
+```{r}
+library(Biostrings)
+
+peak_seqs <- readDNAStringSet(
+  "/Users/senacetin/Downloads/Galaxy8-[Extract_Genomic_DNA_on_data_7].fasta"
+  )
+
+print(paste("The sequence of the first peak is", peak_seqs[[1]]))
+
+```
+
+###1.9 Identify sequence motifs in peak regions
+Navigate to the Regulatory Sequence Analysis Tools (RSAT) website at 
+http://www.rsat.eu/ and pick the appropriate server based on our data.
+
+####1. Which server did you pick?
+
+RSAT Metazoa.
+
+Select the peak-motifs tool from the "NGS-ChIP Seq" section on the left side 
+"Tools" panel on the RSAT website for the server you picked. Upload the extracted
+DNA sequences FASTA file.
+Select "display" as the output and press "GO". It will take some time to generate
+results.
+
+####1. 
+How many motifs do you find? What are the transition frequencies for the nucleo-
+tide composition profiles? Interpret this result.
+
+18 motifs were discovered. Transition frequencies were provided for the nucleotide 
+composition profile (percentage of each nucleotide in sequence) and the dinucleotide
+composition profile (matrix of probabilities of observing an j nucleotide after 
+an i nucleotide): 
+
+- Nucleotide composition profile: 
+
+      a       c       g       t
+      
+    0.26627	0.23270	0.23576	0.26528 
+
+-> t is the most common nucleotide, followed by a, g and c. 
+  
+- Dinucleotide composition profile: 
+
+         a       c       g       t
+    
+    a 0.29877 0.19477	0.28406	0.22239
+
+    c	0.31852	0.28089	0.07961	0.32098
+
+    g	0.26184	0.23119	0.28113	0.22583
+
+    t	0.19141	0.23017	0.28377	0.29464
+
+-> the least common pair is a C followed by a G (0.080), which is normally 
+uncommon except for in CpG islands. The most common is a C followed by a T (0.321).
+
+## 2. SAQ
+### 1. Orthologs, Paralogs, and Homologs (used lecture notes and Orthologs, Paralogs, and Evolutionary Genomics by Koonin)
+(a) 1-to-1 orthologs are pairs of genes where each gene has exactly one ortholog
+in the other species. Which gene pairs are shown to be 1-to-1 orthologs? Please 
+briefly give your rationale.
+
+  C&Y and Z&D are 1-to-1 orthologs as they don't map to any other genes in either
+direction. 
+
+(b) Which gene pairs have evidence that they could be paralogs? Please briefly 
+give your rationale.
+
+  Paralogs emerge from a duplication event. 
+  Genes A & B have evidence that they could be paralogs as they both match to X. 
+All three of these genes likely share a common ancestor which is duplicated in
+the human genome. 
+
+  Gene E might also have a paralog as W was significantly matched with E in humans 
+but not the other way around. This could suggest that there are other genes in the 
+human genome that arose from a duplication event that match with higher significance
+to W, decreasing the significance of E matching to W. 
+  
+(c) Which gene pairs have evidence that they could be homologs? Please briefly 
+give your rationale.
+
+  Homologs are genes that have any ancestral relationship. All genes pairs above
+have evidence that they could be homologs; any hits from BLAST indicate the 
+possibility of common ancestry. 
+
+### 2. Suppose you have sequenced the tumors of 1000 individuals who all have a particular cancer type. You wish to understand the genetic underpinnings of their diseases. Suppose 100 of these individuals have a mutations within gene A, which is 600 nucleotides long. Further suppose that 30 of these 100 have a mutation at the 90th base within gene A.
+  
+  See end of pdf for written answers 
+
+## 3. Sequence Profiles
+
+### 3.1. Part A
+Define an HMM H with three states {Exon, Intron, Intergenic} and alphabet {A, C, G, T}. 
+The initial state probabilities are Exon = 1 and Intron = Intergenic = 0. The
+transition probabilities (from state in rows to state in columns) and emission 
+probabilities (from state in rows to alphabet symbol in columns) are as follows:
+
+#### 3.1.1. 
+  Explain why it is biologically relevant to model DNA sequences with an HMM, 
+particularly in the context of gene prediction of uncharacterized DNA.
+  
+  If you have uncharacterized DNA, you don't know whether a sequence corresponds
+to an intron, exon or intergenic region. HMMs can model these regions and their 
+nucleotide compositions which can provide probability of being in a particular 
+state based on sequence. HMMs can also capture dependencies between nucleotides 
+across positions, which can preserve information about preserved sequences and 
+patterns (e.g. transcription start and stop sites). 
+  
+#### 3.1.2. 
+  Draw the state diagram of this HMM and show the transition probabilities 
+between the genomic features.
+
+  See end of pdf for drawing 
+
+#### 3.1.3. 
+  Given the DNA sequence "CGT", list all possible state paths through the HMM 
+with non-zero probabilities. For each path, calculate the probability of the 
+sequence being generated from that path, using the initial state probabilities 
+and the transition and emission probabilities given in the table above. Note: 
+Assume the sequence always starts in the Exon state, as the initial state proba-
+bility for Exon is 1
+
+```{r}
+states <- c("Intron", "Exon", "Intergenic")
+nucleotides <- c("A", "C", "G", "T")
+
+# transition prob matrix 
+transition_prob <- matrix(c(0.3, 0.6, 0.1,
+                            0.1, 0.8, 0.1, 
+                            0.2, 0.3, 0.5), 
+                            nrow = 3, byrow= TRUE)
+rownames(transition_prob) <- states
+colnames(transition_prob) <- states
+
+# emission prob matrix
+emission_prob <- matrix(c(0.1, 0.4, 0.4, 0.1,
+                          0.3, 0.2, 0.3, 0.2,
+                          0.25, 0.25, 0.25, 0.25), 
+                          nrow = 3, byrow= TRUE)
+rownames(emission_prob) <- states
+colnames(emission_prob) <- nucleotides
+
+# all possible state paths 
+state_paths <- cbind(state1 = rep("Exon", times = 9), 
+                     expand.grid(state2 = states, state3 = states))
+print(state_paths)
+
+```
+```{r}
+# define functions to pull emission and transition probs based on nodes
+transition <- function(node1, node2) {
+  return(transition_prob[node1, node2])
+}
+emission <- function(node1, node2) {
+  return(emission_prob[node1, node2])
+}
+
+# stores transition frequences for paths
+state1_2 <- map2_dbl(state_paths$state1, state_paths$state2, transition)
+state2_3 <- map2_dbl(state_paths$state2, state_paths$state3, transition)
+state3_3 <- map2_dbl(state_paths$state3, state_paths$state3, transition)
+
+path_transition <- state1_2 * state2_3 * state3_3
+# emission(state_paths$state2, nucleotides)
+
+# calculates emission frequencies for each path 
+path_emission <- (emission(state_paths$state1, "C") * 
+                  emission(state_paths$state2, "G") * 
+                  emission(state_paths$state3, "T"))
+
+# multiples all probabilities
+path_probability <- path_transition * path_emission
+
+state_paths <- cbind(
+  state_paths, 
+  state1_2, 
+  state2_3, 
+  state3_3, 
+  path_emission, 
+  path_transition,
+  path_probability
+)
+
+state_paths %>% 
+  arrange(desc(path_probability)) %>% 
+  select(state1, state2, state3, path_probability) %>% 
+  print()
+
+state_paths
+```
+
+#### 3.1.4. 
+  Compute the probability of observing the DNA sequence "CGT" using the brute 
+force approach. Note: You should be able to compute this using the answer to the
+previous question.
+
+```{r}
+# Sum path probabilities 
+CGT_prob = sum(state_paths$path_probability)
+
+print(paste("The probability of observing 'CGT' is:", CGT_prob))
+```
+
+### 3.2 Part B
+  Now suppose you are given the following alignment of a protein domain and you 
+would like to build a HMM profile to model it and then use this profile to search
+for additional sequences:
+
+    1234567
+    MQRANVE
+    M-DAQIK # columns 2 and 6 contain deletions (most have AA in these positions)
+    N-EANIK
+    MRRS-VD
+    MQDAQVR
+   
+  You decide that your profile-HMM will directly model the 1st, 3rd, 4th, 5th 
+and 6th, and 7th columns.
+
+#### 3.2.1. 
+  For your model, compute estimates for the probability of observing each of the 
+20 amino acids for the 5th column. Make sure to correct each estimate by adding 
+a pseudocount (1/20) to each observation. Why is this correction necessary?
+
+```{r}
+# initialize sequences and positions
+sequences <- c("MRANVE", "MDAQIK", "NEANIK", "MRS-VD", "MDAQVR")
+positions <- c(1, 3:7)
+
+# AAs
+AAs <- c("A","C","D","E","F","G","H","I","K","L","M","N","P","Q","R","S","T","V","W","Y")
+
+# initialize empty matrix with amino acids as rows and positions as columns
+emission_matrix <- matrix(0, nrow = length(AAs), ncol = length(positions))
+rownames(emission_matrix) <- AAs
+
+# count AAs in jth position in ith sequence in matrix
+for (i in 1:length(sequences)) {
+  for (j in 1:length(positions)) {
+    aminoacid <- substr(sequences[i], j, j)
+    if (aminoacid != "-") {
+        emission_matrix[aminoacid, j] <- emission_matrix[aminoacid, j] + 1
+    }
+  }
+}
+emission_matrix
+
+# adds pseudocount of 1/20 and normalizes each col to 1 by dividing by col sums
+emission_matrix <- emission_matrix + (1/20)
+
+print("Adding pseudocounts is necessary to ensure that none of the counts are 0,
+      which would result in a probability of 0.")
+
+denominators <- colSums(emission_matrix)
+for (i in 1:ncol(emission_matrix)) {
+  emission_matrix[,i] <- emission_matrix[,i] / denominators[i]
+}
+emission_matrix
+print("Estimated probabilities of AAs at position 5:")
+print(emission_matrix[,4])
+
+```
+
+#### 3.2.2. 
+  For your model, you will need to estimate the probability of having insertions 
+and deletions after each modeled column. Give an estimate for having an insertion, 
+deletion or neither after the 1st column. Make sure to to correct each estimate 
+by adding a pseudocount (1) to each.
+
+```{r}
+# there are three states: match, insertion and deletion
+states <- c("In", "Del", "Match")
+# if majority are AA,
+  # in position, there is an AA --> match
+  # in position, there is an '-' --> deletion
+# if minority are AA, 
+  # in position, there is an AA --> insertion
+  # in position, there is an '-' --> match
+
+# Emission probabilities, given position, prob of AA. 
+# Transition matrix, given position, - etc., match, deletion or insertion
+transition_matrix <- matrix(0, nrow = length(states), ncol = length(positions))
+rownames(transition_matrix) <- states
+
+# initialize vector to store whether AAs are majority (1) or "-" (0) at each pos
+majority = c(0,0,0,0,0,0)
+# at ith position determine whether amino acids are the majority
+for (i in 1:length(positions)) {
+  # if # "-"s is less than half of the number of sequences
+  if (sum(substr(sequences, i, i) == "-") < (length(sequences)/2)) {
+    majority[i] = 1 # majority are amino acids 
+  } else {
+    majority[i] = 0 # majority are "-"
+  }
+}
+
+# counts states at each position
+for (j in 1:length(positions)) {
+  for (i in 1:length(sequences)) {
+    if (majority[j] == 1) { # if AAs majority at position j
+      if (substr(sequences[i], j, j) == "-") { # and if AA is "-", +1 deletion
+        transition_matrix["Del", j] = transition_matrix["Del", j] + 1
+      } else { # if it is an AA, +1 match
+        transition_matrix["Match", j] = transition_matrix["Match", j] + 1
+      }
+    } else if (majority[j] == 0) { #if AAs are not majority at position j
+      if (substr(sequences[i], j, j) == "-"){ # and if AA is "-", +1 insertion
+        transition_matrix["In", j] = transition_matrix["In", j] + 1
+      } else {  # if it is an AA, +1 match
+        transition_matrix["Match", j] = transition_matrix["Match", j] + 1
+      }
+    }
+  }
+}
+
+# add pseudocount + 1/3
+transition_matrix = transition_matrix + 1/3
+
+# normalize 
+transition_matrix = transition_matrix / colSums(transition_matrix)
+
+transition_matrix
+
+print("The probability of having and insertion, deletion or neither after column one is :")
+print(transition_matrix[,2])
+
+```
+
+#### 3.2.3. 
+You notice that the 3rd and 7th columns of the alignment are correlated. Whene-
+ver there is a positively charged amino acid (K or R) in one, there is a negati-
+vely charged amino acid (D or E) in the other. Do HMM-profiles effectively capture 
+these correlations? Why or why not?
+  In pHMMs, the emission probabilities are considered independently at each 
+position and each state is considered to be dependent only on the previous one. 
+Therefore, this pHMM would not be able to effectively capture these correlations 
+due to its assumptions and structure. However, conserved emission probabilities 
+between two positions could be indicative of a correlation. 
+  
+#### 3.2.4. 
+What is the advantage of profile-HMMs over regular profiles/PSSMs?
+  Unlike pHMMs, PSSMs don't allow for gaps, which are common in DNA/protein 
+sequences as insertions and deletions. Profile-HMMs can therefore better model 
+these cases.
+
+## 4. Machine Learning to Classify Cancer Types
+
+```{r}
+library(caret)
+
+testing <- read.csv("/Users/senacetin/Documents/hw4data/testing.csv")
+training <- read.csv("/Users/senacetin/Documents/hw4data/training.csv")
+
+```
+
+### 4.2.
+Train a classifier on the training data to distinguish cancer type using the 
+Support Vector Machine (SVM) method as discussed. If using R, the train() 
+function from the caret package will be useful here - you can directly specify 
+the machine learning method ("svmLinear" in this case, we will use a linear 
+kernel) with the method parameter. Be sure to specify that the Classification 
+column is the labels.
+
+```{r}
+# training with features age, bmi, glucose, insulin, HOMA, leptin, adinopectin, 
+# resistin and MCP1
+classifier <- train(
+  Classification ~ ., 
+  data = training,
+  method = "svmLinear" # Support Vector Machine method
+)
+
+```
+
+### 4.3 
+Now, test your trained classifier on the testing dataset by predicting the hidden
+cancer types of the testing data (predict() function if using R). Generate a 
+confusion matrix and summary statistics (including accuracy) for your classifier
+(confusionMatrix() function if using R). Print out your confusion matrix.
+
+```{r}
+# make predictions
+predictions <- predict(classifier, newdata = testing)
+
+# round probabilities into predictions of 1 or 2 + generate confusion matrix
+confusion_matrix <- confusionMatrix(
+  factor(as.numeric(map_int(predictions, round))), 
+  factor(testing$Classification)
+)
+
+print(confusion_matrix)
+
+```
+
+### 4.4. 
+Do you believe the classifier you trained is a good predictor of cancer type? 
+Explain why or why not, citing the summary statistics from the previous problem.
+
+  The classifier has an accuracy of 0.7143, meaning it predicts the correct cancer
+type 71.43% of the time which is good but not exceptional. 
+Notably, it has a sensitivity (recall) of 0.6875 and specificity (precision) of 
+0.7368, meaning that it is better at predicting cancers of type 2 than type 1. 
+
+### 4.5. 
+  SVM is one type of method developed for use in machine learning. Another 
+category of machine learning methods that is extremely popular in recent years
+is deep learning (neural network) methods. Neural networks have been proven to
+be highly effective and have enabled great strides in many fields, such as 
+image recognition and natural language proccessing. However, deep learning is 
+not without its limitations. In a few sentences, explain why neural networks 
+might or might not be a good choice for the dataset and learning task we chose 
+for this problem.
+
+  Neural networks are probably not the best for this dataset primarily because 
+we do not have enough data. Not having enough samples to train and test your data
+might lead to overfitting. Therefore, we would need many more samples for a neural
+network to be appropriate for this task. 
+
+## 5. Network Analysis
+
+### 5.1 
+```{r}
+# import data
+library(igraph)
+
+gavin_data <- read.delim("/Users/senacetin/Documents/Gavin.txt")
+krogan_data <- read.delim("/Users/senacetin/Documents/Krogan.txt")
+tarassov_data <- read.delim("/Users/senacetin/Documents/Tarassov.txt")
+yu_data <- read.delim("/Users/senacetin/Documents/yu.txt")
+
+```
+
+```{r}
+gavin_dataset <- "/Users/senacetin/Documents/Gavin.txt"
+krogan_dataset <- "/Users/senacetin/Documents/Krogan.txt"
+tarassov_dataset <- "/Users/senacetin/Documents/Tarassov.txt"
+yu_dataset <- "/Users/senacetin/Documents/yu.txt"
+
+datasets <- list(gavin_dataset, krogan_dataset, tarassov_dataset, yu_dataset)
+```
+
+
+### 5.2 
+Compile a table indicating for each network the following information, using the
+"Systematic Name" identifiers for each gene:
+(a) Total number of interactions (edges) in the network
+(b) Network density
+(c) Average degree
+(d) Protein(s) with the highest degree (indicate both the protein name and its 
+    degree)
+(e) Protein(s) with degree >= 3 that have the highest local clustering coefficient
+    (indicate both the protein name and its clustering coefficient)
+Hint: You may want to use the igraph package for this question. The following 
+functions may be helpful: simplify, gsize, edge_density, degree, transitivity.
+Note: Self loops should not be considered, i.e. A-A should not be counted as an 
+edge and duplicated edges should be removed.
+
+```{r}
+# initialize data frame to store stats, lists to store igraph objs
+network_info <- data.frame()
+graphs <- list()
+
+for (dataset in datasets) {
+  data <- read.delim(dataset)
+  
+  # tidy data
+  tidy_data <- tibble(
+    A = data$Systematic.Name.Interactor.A,
+    B = data$Systematic.Name.Interactor.B
+  )
+  
+  # create igraph object
+  graph <- graph_from_data_frame(tidy_data, directed = FALSE)
+  
+  # Clean up self loops and duplicated edges
+  graph <- simplify(graph, remove.multiple = TRUE, remove.loops = TRUE)
+  
+  # store graph in list of graphs with name of author
+  graphs[[data$Author[1]]] <- graph
+  
+  # compute number of edges in network
+  edges <- gsize(graph)
+  
+  # compute network density in each network
+  density <- edge_density(graph)
+  
+  # average degree
+  avg_degree <- mean(degree(graph))
+  
+  # max degree
+  max_degree <- paste(
+    names(which.max(degree(graph))), 
+    which.max(degree(graph))[],
+    sep = ":"
+  )
+  
+  # clustering coeffs
+  clustering_coeff <- transitivity(graph, type = "local")
+  # Protein(s) with degree >= 3
+  proteins_3 <- names(degree(graph)[degree(graph) >= 3])
+  # highest clustering proteins with degree >= 3 
+  high_clustering <- paste(
+    names(which.max(clustering_coeff[proteins_3])),
+    which.max(clustering_coeff[proteins_3])[],
+    sep = ":"
+  )
+
+  network_info = rbind(network_info, data.frame(
+    Dataset = data$Author[1],
+    Total_Edges = edges, 
+    Network_Density = density,
+    Avg_Degree = avg_degree, 
+    Max_Degree = max_degree,
+    Highest_Clustered = high_clustering
+    )
+  )
+}
+
+```
+
+### 5.3 
+  Plot the degree distributions of all 4 datasets in a single stacked histogram 
+with each dataset in a different color. Are they similar or different? Discuss 
+and provide potential explanations.
+```{r}
+library(ggplot2)
+
+# get degree distributions
+gavin_deg <- degree(graphs[["Gavin AC (2006)"]])
+krogan_deg <- degree(graphs[["Krogan NJ (2006)"]])
+tarassov_deg <- degree(graphs[["Tarassov K (2008)"]])
+yu_deg <- degree(graphs[["Yu H (2008)"]])
+
+# combine data in one tibble
+degree_dist <- tibble(
+  # repeat dataset names for each degree
+  dataset = rep(
+    c("Gavin", "Krogan", "Tarassov", "Yu"), 
+    times = c(length(gavin_deg), length(krogan_deg), length(tarassov_deg), length(yu_deg))
+    ), 
+  degree = c(gavin_deg, krogan_deg, tarassov_deg, yu_deg)
+)
+
+# plot stacked distributions 
+ggplot(degree_dist, aes(x = degree, fill = dataset)) +
+  geom_histogram(position = "stack", bins = 30) +
+  labs(title = "Degree Distribution of Dataset Graphs",
+       x = "Degree",
+       y = "Frequency"
+  )
+
+```
+
+The distributions are similar for each dataset; most vertices have a low number 
+of edges. Although not visible in this graph, the vertices with the highest 
+number of edges are dramatically higher than most of the vertices. These might
+correspond to the proteins they are investigating in the paper in the first 
+place--therefore the datasets contain a high number of ppi data on a couple. 

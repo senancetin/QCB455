@@ -1,0 +1,687 @@
+---
+title: 'HW3'
+author: "Sena Cetin"
+date: "2024-10-22"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(fastcluster)
+library(dendextend)
+```
+
+## 1. Clustering
+  Suppose you have 159 samples, some corresponding to breast cancer basal sub-
+type samples and some corresponding to normal samples. You are now interested in 
+identifying samples with similar gene expression profiles, with the expectation 
+that basal subtype samples will exhibit similar expression patterns when 
+compared to each other, and likewise for normal samples.
+
+### 1.1 Data Imports and Cross-Checks
+For this problem, you will need to load the tcga_brca_gene_expression_data.csv 
+file from the hw3data folder into your working environment. Rows correspond to 
+patients, while columns correspond to genes. The values indicate the level of 
+expression for each gene in a given patient. Use row.names=1 so that the row 
+names represent patient IDs. The BRCA_Subtype_PAM50 reports the tumor subtype or
+whether the sample is normal tissue. Note that this dataset is large and may 
+take a few minutes to load.
+
+```{r}
+# import data set
+brca_gene_exp <- read.csv(
+  "/Users/senacetin/Downloads/hw3data/tcga_brca_gene_expression_data.csv",
+  row.names = 1
+  )
+```
+
+To verify that your data import was successful, perform the following cross-
+checks:
+
+#### 1.1.1 
+How many patient samples and genes are included in the data?
+```{r}
+# number of patients
+patient_num = nrow(brca_gene_exp)
+
+# gene number
+gene_num = ncol(brca_gene_exp)
+
+print(paste("Number of Patient Samples:", patient_num))
+print(paste("Number of Genes:", gene_num))
+```
+
+#### 1.1.2. 
+Plot two histograms (one for each sample) showing the distribution of gene 
+expression values for samples A0B3 and A0JB.
+```{r}
+# histogram for A0B3 (basal sample)
+hist(
+  as.numeric(brca_gene_exp["A0B3", 2:gene_num]), 
+  main = "Distribution of Gene Expression for Sample A0B3 (Basal)",
+  xlab = "Gene Expression Values",
+  breaks = 40,
+  xlim = c(-6, 6),
+  ylim = c(0,2000)
+  )
+
+# histogram for A0JB (normal sample)
+hist(
+  as.numeric(brca_gene_exp["A0JB", 2:gene_num]), 
+  main = "Distribution of Gene Expression for Sample A0JB (Normal)",
+  xlab = "Gene Expression Values",
+  breaks = 40,
+  xlim = c(-6, 6),
+  ylim = c(0,2000)
+  )
+
+```
+
+#### 1.1.3. 
+Do these histograms look like you would expect based on their annotation of 
+whether they are basal breast cancer samples or normal samples? 
+Do you think this is raw data or processed/normalized data, and why?
+  
+  As expected, the gene expression profiles are different between the cancer and 
+normal samples. These genes are generally upregulated in the basal breast cancer 
+sample (A0B3) as the peak around -5 is much smaller.
+  This appears to be normalized data as both histograms are centered around zero
+and follow a normal distribution (except for the peak around -5). Also, the 
+interval of the gene expression values is consistent between samples at
+[-5.199338, 5.199338]. 
+
+### 1.2 Distance Metrics and Visualization
+  First, you decide to measure the similarity between every pair of patients in 
+your dataset. For these questions, you may find the following methods helpful:
+hclust, as.dendrogram, as.dist, dendextend::cutree, plot, cor.
+
+#### 1.2.1. 
+Use Pearson correlation to create a similarity matrix. Print out the top 10 
+patient pairs with the lowest correlation. Include patient IDs and distance 
+values.
+```{r, echo = FALSE}
+# calculates similarity matrix using pearson correlation on transposed df to get
+# similarity between patient's gene expression profiles
+sim_matrix <- cor(t(brca_gene_exp[,2:gene_num]), method = "pearson")
+
+# convert to distance matrix 
+dists <- as.dist(1 - sim_matrix)
+dists_matrix <- as.matrix(dists)
+
+# store the indices of upper traingular values
+indices = which(upper.tri(dists_matrix), arr.ind = TRUE)
+
+# make data frame with patient pair names (from indices) and aij'th dist value
+patient_pairs <- tibble(
+  Patient_1 = rownames(dists_matrix)[indices[, 1]],
+  Patient_2 = colnames(dists_matrix)[indices[, 2]],
+  Distance = dists_matrix[indices]
+)
+
+# print those with the highest distance --> the least correlated
+print(patient_pairs %>% slice_max(Distance, n = 10))
+```
+
+Next, you must group patients into clusters based on the similarity of their 
+expression profiles.
+
+#### 1.2.2. 
+  Use average linkage to combine similar expression profiles and build a 
+dendrogram of their relationships; plot the dendrogram without printing the 
+names of the leaf nodes.
+```{r}
+# hierarchical clustering using average linkage 
+cluster_avg <- hclust(dists, method = "average") 
+
+# plot dendogram
+dendogram <- as.dendrogram(cluster_avg)
+plot(
+  dendogram, 
+  main = "Dendrogram of Patient Expression Profiles", 
+  ylab = "Height",
+  ylim = c(0, 0.4),
+  leaflab = "none"
+  )
+
+```
+#### 1.2.3. 
+  Define clusters by cutting the dendrogram representation of the tree at a 
+distance threshold corresponding to 55% of the total tree height. Report the 
+number of clusters and their sizes (i.e., the number of patients in each 
+cluster).
+```{r}
+# 55% of total height
+threshold_height = 0.55 * max(cluster_avg$height)
+
+# cut tree at threshold to define clusters 
+clusters <- cutree(cluster_avg, h = threshold_height)
+
+# make tibble with each cluster and size 
+clusters_tibble <- tibble(
+  cluster = clusters
+)
+clusters_tibble <- clusters_tibble %>% 
+  group_by(cluster) %>% 
+  summarise(Number_of_Patients = n())
+
+# print number of clusters and number of patients for each cluster
+print(paste("Number of Clusters:", max(clusters)))
+print(clusters_tibble)
+
+```
+
+#### 1.2.4. 
+For the two largest clusters, make bar plots to show the distribution of the 
+tumor subtypes for the patients in these clusters. Do these two clusters 
+successfully separate patients with different tumor subtypes?
+
+```{r}
+# pull names of two largest clusters and store
+largest_clusters <- clusters_tibble %>% 
+  slice_max(Number_of_Patients, n = 2) %>% 
+  pull(cluster)
+
+# patient labels in these clusters
+cluster1_patients = names(clusters[clusters == largest_clusters[1]])
+cluster15_patients = names(clusters[clusters == largest_clusters[2]])
+
+# pulls BRCA subtype of patients in clusters 1 and 2
+cluster1_tumorsubtypes = brca_gene_exp[cluster1_patients, 1]
+cluster15_tumorsubtypes = brca_gene_exp[cluster15_patients, 1]
+
+subtypes <- tibble(
+  Cluster = c(
+    rep(1, length(cluster1_tumorsubtypes)), 
+    rep(15, length(cluster15_tumorsubtypes))
+    ),
+  Subtypes = c(cluster1_tumorsubtypes, cluster15_tumorsubtypes)
+)
+
+# Plots the distribution of tumor subtypes for patients in these clusters
+ggplot(subtypes, aes(x = factor(Cluster), fill = Subtypes)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = "Distribution of Tumor Subtypes by Cluster",
+    y = "Count",
+    x = "Cluster"
+    ) +
+  theme_minimal()
+
+```
+
+Although there are still some 'normal' samples in Cluster 1 and some 'basal' in 
+cluster 15, they mostly separate patients with different tumor subtypes with
+success.
+  
+### 1.3 Similarity and Distance Measures
+As an alternative to Pearson correlation (and other metrics), Euclidean distance
+is also sometimes used to measure distances between data points and infer their 
+similarities.
+
+#### 1.3.1. 
+  As an alternative to the Pearson correlation coefficient, Spearman’s rank 
+correlation coefficient can be used to find co-expressed genes. Explain the 
+advantages and disadvantages of using Spearman’s rank correlation for this task 
+as compared to the Pearson correlation coefficient.
+
+Spearman's rank correlation is less susceptible to outliers because it uses the 
+rank of expression levels rather than their raw value; this prevents extreme 
+values (which are common in gene expression datasets) to bias the correlation 
+coefficients. 
+
+A disadvantage of Spearman's rank correlation is that you lose any information 
+about the differences in magnitude between expression levels as you simply use 
+their rank. Pearson is more sensitive to the subtleties within the relationships
+of a set of gene's expression.
+
+Additionally, Pearson's correlation coefficient measures linear relationships. 
+If two genes have a non-linear relationship, a Spearman's rank correlation 
+might be better suited.
+
+#### 1.3.2. 
+  Another alternative is to use Euclidean distance instead of the Pearson 
+correlation coefficient. Give an example of two vectors where their Pearson 
+correlation coefficient is 1 but the Euclidean distance is > 0. When using 
+Pearson correlation to measure the similarity between two genes, what property 
+is prioritized compared to when using Euclidean distance?
+
+Two vectors with a perfect linear relationship but euclidean distance > 0
+[1,1] and [2,2]
+Pearson correlation prioritizes how two variables vary together (trend) as you 
+are looking at an average across a vector. Euclidean distance priorizes the 
+similarity in expression profiles, as you are using the distances between the 
+vectors themselves. 
+
+## 2. A Polygenic risk score for eye color
+### 2.1 
+Compute pbrown for an individual with genotype 0 = X1 = X2 = X3 = X4 = X5 = X6.
+```{r}
+# store alpha and beta estimates
+alpha1 = 3.94
+alpha2 = 0.65
+beta1 = c(-4.81, 1.40, -0.58, -1.30, 0.47, 0.70)
+beta2 = c(-1.78, 0.87, -0.03, -0.50, 0.27, 0.73)
+
+# function computing pbrown = 1 / (1 + pblue/pbrown + pother/pbrown) 
+compute_pbrown = function(genotype) {
+  
+  # calculate pblue/pbrown and pother/pbrown
+  pblue_brown <- exp(alpha1 + sum(beta1 * genotype))
+  pother_brown <- exp(alpha2 + sum(beta2 * genotype))
+  
+  # calculate pbrown
+  pbrown <- 1 / (1 + pblue_brown + pother_brown)
+  
+  return(pbrown)
+}
+
+genotype_0 = c(0, 0, 0, 0, 0, 0) # exponents will actually be reduced to a1 & a2
+
+compute_pbrown(genotype_0)
+```
+
+### 2.2 
+Under this model, which genotype has the highest value of ln(pbrown/1-pbrown)
+Justify your answer.
+
+  The genotype that maximizes this value maximizes the value of pbrown and 
+therefore minimizes the value of the exponents. This would be the case where any
+negative beta values are paired with X values of 2 and positive beta values with
+0.  
+
+```{r}
+# 2s align with negative values and 0s with positive
+genotype_high = c(2, 0, 2, 2, 0, 0)
+
+#calculate highest ln(pbrown/1-pbrown) value
+pbrown_high = compute_pbrown(genotype_high)
+print(
+  paste(
+    "Highest ln(pbrown/1-pbrown) value:", 
+    log(pbrown_high / (1 - pbrown_high))
+    )
+  )
+```
+
+### 2.3
+(a) Compute (3) for each individual in the dataset.
+```{r}
+geno_prs <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw3data/geno_prs.txt", 
+    sep = ",", 
+    header = TRUE
+    )
+  )
+
+# stores values for 
+log_odds = c()
+for (i in 1 : nrow(geno_prs)) {
+  pbrown = compute_pbrown(geno_prs[i, 1:6])
+  log_odds <- append(log_odds, log(pbrown / (1 - pbrown)))
+}
+
+geno_prs <- geno_prs %>% 
+  mutate(log_odds_score = log_odds)
+```
+
+(b) plot a histogram of (3) for individuals with each eye color. You should end 
+up with three histograms.
+
+```{r}
+geno_prs %>% 
+  filter(Y == "brown") %>% 
+  pull(log_odds_score) %>% 
+  hist(, 
+    breaks = 25,
+    main = "Distribution of Log-Odds for Brown Eyes in Individuals with Brown Eyes",
+    xlab = "Log-Odds"
+  )
+geno_prs %>% 
+  filter(Y == "blue") %>% 
+  pull(log_odds_score) %>% 
+  hist(, 
+    breaks = 25,
+    main = "Distribution of Log-Odds for Brown Eyes in Individuals with Blue Eyes",
+    xlab = "Log-Odds"
+  )
+geno_prs %>% 
+  filter(Y == "other") %>% 
+  pull(log_odds_score) %>% 
+  hist(, 
+    breaks = 25,
+    main = "Distribution of Log-Odds for Brown in Individuals with Other Eye Colors",
+    xlab = "Log-Odds"
+  )
+
+```
+(c) Describe the patterns in these histograms for the three categories, and how 
+they compare to one another.
+
+In the histogram for the individuals with brown eyes, the log-odds values are 
+generally clustered towards positive log-odds (consistent). In the histogram for
+the individuals with blue eyes, the log-odds values are clustered towards
+negative log-odds. The values in the histogram for individuals with other eye 
+colors are distributed across positive and negative log-odds, which is 
+unexpected as you would expect the values to cluster to negative log-odds as 
+well. The PRS model is generally effective at predicting brown eyes in brown eye
+and blue eye populations. 
+
+## 3. Motif Finding
+
+### 3.1 Theoretical Model
+Suppose you have a transcription factor that binds the following set of 
+sequences: CTTC, AATG, CATG, ATTC.
+#### 3.1.1. 
+Build a position frequency matrix to model this transcription factor, using a 
+pseudocount of 0.25.
+```{r}
+# sequences and nucleotides
+sequences <- c("CTTC", "AATG", "CATG", "AATC")
+nucleotides = c("A", "C", "G", "T")
+
+# initialize empty matrix with nucleotides as rows and seq position as cols
+pfm <- matrix(0, nrow = length(nucleotides), ncol = length(sequences))
+dimnames(pfm) <- list(nucleotides, 1:4)
+
+# count nucleotides at jth position in ith sequence
+for (i in 1:4) {
+  for (j in 1:4) {
+    nucleotide <- substr(sequences[i], j, j)
+    pfm[nucleotide, j] <- pfm[nucleotide, j] + 1
+  }
+}
+
+# adds pseudocount of 0.25 and normalizes each col to 1 by dividing by col sums
+pfm <- pfm + 0.25 
+pfm <- pfm / colSums(pfm)
+pfm
+```
+
+
+#### 3.1.2. 
+Suppose that the genome this transcription factor is found in has a nucleotide 
+composition of A: 30%, C: 20%, G: 10%, and T: 40%. Give log-odds scores for 
+searching for binding sites for this transcription factor within the sequence 
+CAATG. Note: You don’t need to consider the reverse complement of this sequence.
+```{r}
+# initialize empty pwm
+pwm <- matrix(0, nrow = length(nucleotides), ncol = length(sequences))
+dimnames(pwm) <- list(nucleotides, 1:4)
+
+# store background nucleotide composition in genome in named vector
+background <- c(A = 0.30, C = 0.20, G = 0.10, T = 0.40)
+
+# calculate log odds for each entry in pfm and store in pwm
+for (i in rownames(pfm)) {
+  for (j in 1: ncol(pfm)) {
+    pwm[i, j] <- log(pfm[i,j] / background[i])
+  }
+}
+pwm 
+
+# calculate score of CAAT and AATG (two 4 nucleotide windows of CAATG)
+seq_1 = "CAAT"
+seq_2 = "AATG"
+
+# calculate score for CAAT by summing score at each position 
+score_seq_1 = 0
+for (j in 1:4) {
+  nucleotide <- substr(seq_1, j, j)
+  score_seq_1 <- score_seq_1 + pwm[nucleotide, j]
+}
+
+# calculate score for AATG by summing score at each position 
+score_seq_2 = 0
+for (j in 1:4) {
+  nucleotide <- substr(seq_2, j, j)
+  score_seq_2 <- score_seq_2 + pwm[nucleotide, j]
+}
+
+print(paste("Log-odds score for CAAT in CAATG:", score_seq_1))
+print(paste("Log-odds score for AATG in CAATG:", score_seq_2))
+
+```
+
+#### 3.1.3. 
+Suppose an RNA binding protein is found to bind the following binding sites: 
+CUCGAG, CGGCCG, CACGUG, and CGCGCG. It is apparent that these sequences have 
+complementary bases in positions 1 and 6, 2 and 5, and 3 and 4. Explain why PWMs
+are not a good choice to model the binding sites for this protein.
+
+Due to the complementary bases, this RNA molecule might be forming a secondary 
+structure, such as a hairpin structure. This protein might bind based on a 
+specific secondary structure rather than specificities in a sequence. A PWM 
+models binding specificity based on sequence, so it would be ill suited for 
+this protein. It also assumes that nucleotide probabilites at each position to 
+be independent; this protein shows a clear pattern
+
+### 3.2 Uncovering Regulators
+A set of genes in E. coli were found to be co-regulated across a variety of 
+conditions. The regulatory regions of these genes are found in the file: 
+DNA-seqs.txt. Use the MEME and Tomtom tools from the MEME Suite to uncover the
+putative regulator. Require that the motif be found at least once in each 
+sequence, and that one motif be searched for. Please read carefully the tools 
+description (to decide on the steps required to solve this question) and 
+document the input and output at each step.
+
+Inputs and outputs available through following links:
+
+[Meme Suite Results](https://meme-suite.org/meme/opal-jobs/appMEME_5.5.71730508353470-1758429015/meme.html)
+
+[Tomtom Results](https://meme-suite.org/meme/opal-jobs/appTOMTOM_SHORT_5.5.71730508917850-621101080/tomtom.html)
+
+Use following if links above do not work: 
+
+https://meme-suite.org/meme/opal-jobs/appMEME_5.5.71730508353470-1758429015/meme.html
+
+https://meme-suite.org/meme/opal-jobs/appTOMTOM_SHORT_5.5.71730508917850-621101080/tomtom.html
+
+##4. GO term enrichment 
+
+```{r}
+# List of yeast genes tested in  experiment
+ORFs = read.table(
+  "/Users/senacetin/Downloads/hw3data/all_yeast_orfs.txt", 
+  stringsAsFactors = FALSE, col.names = "ORF")$ORF
+
+# list of differentially expressed genes in experiment
+DE_ORFs = read.table(
+  "/Users/senacetin/Downloads/hw3data/differentially_expressed_orfs.txt",
+  stringsAsFactors = FALSE, col.names = "ORF")$ORF
+
+# Classification of all yeast genes to GO biological process IDs 
+GO_Annotation = read.table(
+  "/Users/senacetin/Downloads/hw3data/go_bp_matrix.txt", 
+  stringsAsFactors = FALSE,header=TRUE, check.names = FALSE,row.names=1) 
+
+# Mapping between GO IDs and GO terms
+GO_Terms = read.table(
+  "/Users/senacetin/Downloads/hw3data/go_bp_to_annotation.txt", 
+  stringsAsFactors = FALSE, sep = "\t", check.names=FALSE, quote="", 
+  col.names=c("GOterm","Description"))
+```
+
+### 4.1 Data Validation
+
+#### 4.1.1. 
+Are all genes in your differentially expressed list included in the list of 
+tested genes? If not, which genes are missing from the tested genes? Why do you
+think they are missing? If possible, fix the differentially expressed list. 
+Otherwise, eliminate these genes from the differentially expressed list. Hint: 
+remember that you wouldn’t find a gene to be differentially expressed unless you
+tested it. Therefore, the list of differentially expresesd genes should be a 
+subset of the list of tested genes. Also, keep in mind that data input is often 
+imperfect and that this example is designed to simulate raw data.
+```{r}
+# find missing genes
+missing_genes <- setdiff(DE_ORFs, ORFs)
+
+# if genes missing, print and remove from DE_ORFs
+if (length(missing_genes) > 0) {
+  print(
+    "Not all genes in DE list are in the list of tested genes. Missing Genes:",
+  )
+  print(missing_genes)
+  filtered_DE_ORFs <- DE_ORFs[DE_ORFs %in% ORFs]
+} else {
+  print("All genes in DE list are among those tested.")
+}
+
+```
+
+The ORFs dataset might not contain all yeast genes. Therefore, there might be 
+differentially expressed genes that were detected but that have not been 
+verified or annotated.
+
+#### 4.1.2. 
+Calculate the size of each GO term, i.e. the number of genes annotated to it. 
+Plot the distribution of GO term sizes. What is the largest GO term? Report the
+GO term id, name and size.
+```{r}
+GO_terms_size <- colSums(GO_Annotation)
+
+hist(
+  GO_terms_size, 
+  breaks = 100, 
+  main = "Distribution of GO term sizes",
+  xlab = "Size (# genes annotated)"
+  )
+
+GO_terms_summary <- tibble(
+  id = names(GO_terms_size),
+  name = GO_Terms[match(names(GO_Annotation), GO_Terms$GOterm), 2],
+  size = GO_terms_size
+)
+
+print("The largest GO term:")
+print(GO_terms_summary %>% slice_max(size))
+```
+
+#### 4.1.3. Which gene has the most unique associated GO terms?
+```{r}
+gene_go_terms <- rowSums(GO_Annotation)
+
+print(
+  paste(
+    "The gene with the most unique associated GO terms is", 
+    names(which.max(gene_go_terms)), 
+    "with", max(gene_go_terms), "associations"
+    )
+  )
+```
+
+#### 4.1.4. 
+Calculate the number of GO terms for gene YAL068C. Is GO:1901135 “carbohydrate 
+derived metabolic process” among the terms?
+```{r}
+# number of GO terms associated with YAL068C
+print(paste("Number of GO terms for YAL068C:", gene_go_terms["YAL068C"]))
+
+# Go terms for gene YAL068C
+yal068c_go_terms <- GO_Annotation["YAL068C", ]
+
+# check if GO:1901135 associated with YAL069C
+if ("GO:1901135" %in% colnames(yal068c_go_terms)){
+  print("GO:1901135 is associated with YAL069C")
+} else {
+  print("GO:1901135 is not associated with YAL069C")
+}
+```
+
+### 4.2 Enrichment Analysis
+1. Use the hypergeometric test to calculate the enrichment of each GO term among
+the list of differentially expressed genes from your experiment. Print out the 
+ranked list of all significant GO terms (sorted by corrected p-value, all 
+p-values < 0.05) in a table with the following columns:
+• GO ID
+• GO term name
+• Number of genes in the background gene list annotated to this GO term
+• Number of genes in the differentially expressed gene list annotated to this GO term 
+• Fold enrichment
+• Enrichment p-value
+• Enrichment p-value corrected for multiple testing using the Bonferroni method
+
+```{r}
+N = length(intersect(ORFs, rownames(GO_Annotation))) # no of genes in background
+n = length(filtered_DE_ORFs) # number of differentially-expressed genes
+
+# initialize table for test results
+enrich_analysis <- data.frame(
+  GO_ID = character(),
+  GO_term_name = character(),
+  background_number = integer(), # no of genes in background gene list annotated
+  DE_gene_count = integer(), # no of genes in DE gene list annotated to GO term
+  fold_enrichment = numeric(),
+  pval = numeric()
+)
+
+# for each term from experiment
+for(term in colnames(GO_Annotation)) {
+  # get GO term name
+  term_name <- GO_Terms$Description[GO_Terms$GOterm == term]
+  
+  # finds genes in background list annotated to this GO term and records #
+  background_genes <- rownames(GO_Annotation)[GO_Annotation[, term] == 1]
+  K <- length(background_genes) #number of genes in background with GO term
+  
+  # finds genes in DE list annotated to this GO term and records #
+  DE_genes <- intersect(background_genes, filtered_DE_ORFs)
+  k <- length(DE_genes) # number of differentially-expressed genes with GO term
+  
+  # calculates fold enrichment -- abundance of GO term among DE genes divided by
+  # the abundance of  GO term among all genes
+  fold_enrich <- (k / n) / (K / N)
+  
+  # calculate p value
+  pvalue = phyper(k-1, K, N-K, n, lower.tail=FALSE) 
+  
+  # bind to data frame
+  enrich_analysis <- rbind(
+    enrich_analysis,
+    data.frame(
+      GO_ID = term,
+      GO_term_name = term_name,
+      background_number = K, 
+      DE_gene_count = k, 
+      fold_enrichment = fold_enrich,
+      pval = pvalue 
+    )
+  )
+}
+
+#perform bonferroni corrections
+corr_pvals <- p.adjust(enrich_analysis$pval, method = "bonferroni")
+enrich_analysis <- cbind(enrich_analysis, corr_pval = corr_pvals)
+
+# table with significant GO terms 
+significant_GO <- enrich_analysis[enrich_analysis$corr_pval < 0.05, ]
+
+# order by corrected pvalue
+significant_GO <- significant_GO[order(significant_GO$corr_pval), ]
+
+# omit any NA rows (occurs with GO:0008150/biological process general annotation
+# p-value calculation)
+significant_GO <- na.omit(significant_GO)
+
+print("Significant GO terms:")
+print(significant_GO)
+
+```
+
+### 4.3 Theoretical Question
+  Imagine that at some point, you realized that the method used to quantify 
+gene expression was restricted to only non-essential genes in the yeast genome. 
+Explain how this could affect your previous analysis and the obtained p-values.
+
+Essential genes are not differentially expressed as they are generally 
+consistent across cells and tissues. The calculation of the p values and fold 
+enrichment depends on the distribution of genes in both the differentially 
+expressed and background sets. Therefore, restricting the method to only 
+non-essential genes would greatly alter the fold enrichment and p values. 
+
+

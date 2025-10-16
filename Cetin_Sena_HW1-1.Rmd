@@ -1,0 +1,625 @@
+---
+title: 'HW1: Sequencing, Statistical Concepts, and Study Design'
+author: "Sena Cetin"
+date: "2024-09-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+```
+
+## 1. Computing q-values from p-values
+
+### 1.1 - 1.2
+
+```{r}
+#1.1 loads file
+sim.pval <- as_tibble(
+  read.table("/Users/senacetin/Downloads/hw1data/sim-pvals.txt", header = TRUE)
+  )
+
+#1.2
+# proportion of truly null tests pi_0 = m0/m
+m = nrow(sim.pval)
+pi_0 <- sim.pval %>% 
+  filter(null == 1) %>% 
+  nrow() / m
+
+print(paste("The proportion of truly null tests pi0 is", pi_0))
+```
+
+### 1.3
+
+```{r}
+#plots distribution of pvals of null tests
+sim.pval %>%
+  filter(null == 1) %>%
+  pull(pval) %>%
+  hist(
+    , 
+    breaks = 20, 
+    main = "P-value Distribution of Null Tests", 
+    xlab = "P-value"
+    )
+
+#plots distribution of pvals of alternative tests
+sim.pval %>%
+  filter(null == 0) %>%
+  pull(pval) %>%
+  hist(
+    , 
+    breaks = 20,
+    main = "P-value Distribution of Alternative Tests", 
+    xlab = "P-value"
+    )
+```
+
+P values are a measure of how likely the test statistic is under the null 
+hypothesis. Since we know H0 is not true and the alternative is significant, the
+p-values of the differentially expressed gene simulated under the alternative 
+hypothesis are skewed towards 0 ( the p values suggest significance). Under the 
+null hypothesis, the genes are not differentially expressed. The p values are 
+therefore uniformly distributed, suggesting that the hypothesis is not 
+significant (all p-values [0,1] are equally likely).
+
+### 1.4
+
+```{r}
+#plots density of combined p-value distribution
+sim.pval %>%
+  pull(pval) %>%
+  hist(, freq = FALSE, main = "P-value Distribution", xlab = "P-value") %>% 
+  abline(h = pi_0, col = "red")
+legend("topright", legend = "pi0", col = "red", lwd = 1)
+```
+
+Pi0 corresponds to the proportion of truly null tests. The p values under this 
+line belong to the null, whereas those above belong to the alternative.
+
+### 1.5
+
+You could estimate pi0 by picking the density (or a bit lower) at which the 
+distribution of combined p-values is uniform i.e. belongs to the null hypothesis
+
+### 1.6
+
+```{r}
+# calculates # pvals smaller than each pval
+sim.FDR = sim.pval %>% 
+  mutate(pvals_smaller = sapply(
+    sim.pval$pval, 
+    function(x) sum(sim.pval$pval <= x))) %>% 
+  arrange(pval)
+
+# FDR fxn where x is pval and y is the number of pvals smaller or equal to x 
+FDRfxn = function(x, y) {
+  FDR <- (x * m * pi_0) / y
+  return(FDR)
+}
+
+# initializes empty vector to store FDRs
+FDR_vec = c()
+
+# iterate through all p values and store FDRs in empty vector
+for(i in 1:m) {
+  FDR_vec <- append(FDR_vec, FDRfxn(sim.FDR$pval[i], sim.FDR$pvals_smaller[i]))
+}
+
+# mutates stored FDR values as new column by associated pvals
+sim.FDR <- sim.FDR %>% 
+  mutate(FDR = FDR_vec) 
+
+## if greater, set to minimum ahead of it
+sim.FDR <- sim.FDR %>% 
+  arrange(pval)
+
+plot(
+  sim.FDR$pval, 
+  sim.FDR$FDR,
+  main = "Relationship between p-values and FDR estimate",
+  ylab = "FDR estimate",
+  xlab = "P-values"
+  )
+
+# create new column for q values 
+sim.FDR <- sim.FDR %>% 
+  mutate(qval = sim.FDR$FDR) 
+
+# iterate through each FDR to monotonize : if not monotonous (i - 1)th q-val is 
+# adjusted to minimum FDR of all p-values greater than it
+
+for (i in m : 2) {
+  if (sim.FDR$FDR[i - 1] > min(sim.FDR$FDR[i : m])) {
+    sim.FDR$qval[i - 1] = min(sim.FDR$FDR[i : m])
+  }
+}
+
+# caps q-vals at 1 if above
+for(i in (m-1) : 1) {
+  if (sim.FDR$qval[i] > 1) {
+    sim.FDR$qval[i] = 1
+  }
+}
+
+```
+
+### 1.7
+
+FDR is the expected proportion of Type I errors among the rejected hypotheses, 
+calculated by the number of false positives (V) among the set of rejected
+hypotheses (R) FDR = V/R. q’(p) estimates the FDR; pmpi0 estimates the number of
+null tests deemed as significant (#tests * proportion of null tests * p-value) 
+while #{p’<= p} is the number of tests deemed significant at a threshold p (less 
+than threshold). Their ratio gives the proportion of null tests among those 
+deemed significant.
+
+### 1.8
+
+```{r}
+plot(
+  sim.FDR$pval, 
+  sim.FDR$qval,
+  main = "Relationship between p-values and q-values",
+  ylab = "Q-values",
+  xlab = "P-values"
+  )
+```
+
+The maximum q value is 0.8998823, which is close to 0.9, the proportion of 
+truly null tests (pi0).
+
+### 1.9
+
+```{r}
+library(qvalue)
+
+# qvalues for each p value w/ package
+sim.FDR <- sim.FDR %>% 
+  mutate(bioc_qval = qvalue(sim.FDR$pval)$qvalues)
+
+bioc_pi0 = qvalue(sim.FDR$pval)$pi0
+print(paste("The estimate of pi0 from the qvalue package is", bioc_pi0))
+```
+
+### 1.10
+
+```{r}
+ggplot(sim.FDR, aes(x = bioc_qval, y = qval)) +
+  geom_point() +
+  geom_abline(aes(intercept = 0, slope = 1), color = "blue") +
+  labs(
+    title = "Comparison of Manual and Package Q-value Estimates",
+    y = "Manual Q-value Estimates",
+    x = "Package Q-value Estimates"
+    )
+```
+
+Although they are almost proportional, the manually calculated q-values increase
+at a slightly faster rate than those of the package, which is expected since the
+proportion of truly null tests was also lower in the package. The monotonization
+process in the package might also be different.
+
+### 1.11
+
+```{r}
+# Bonferroni corr for pvals 
+corr_pvals = c()
+
+for (i in 1:m) {
+  corr_pvals <- append(corr_pvals, min((m * sim.FDR$pval[i]), 1))
+}
+
+sim.FDR <- sim.FDR %>% 
+  mutate(corr_pval = corr_pvals)
+
+# counts number of significant corrected pvals and qvals
+significant_p = 0
+a = 0.05
+for (i in 1:m) {
+  if (corr_pvals[i] <= a) {
+    significant_p = significant_p + 1
+  }
+}
+
+significant_q = 0
+for (i in 1:m) {
+  if (sim.FDR$bioc_qval[i] <= a) {
+    significant_q = significant_q + 1
+  }
+}
+
+# calculates proportion of significant p and q vals
+proportion_p = significant_p / m
+proportion_q = significant_q / m
+
+```
+
+The proportion of significant q values (1.19%) is much higher than the 
+proportion of significant Bonferroni corrected p values (0.33%). In the attempt 
+to completely eliminate false positives, you can inadvertently reduce the amount
+of good inferences you can make with a data set.
+
+## 2. Sequencing and Assembly
+
+### 2.1.
+
+Shotgun sequencing is when you randomly fragment a long DNA sequence, sequence
+the individual fragments and assemble those sequences to ultimately determine 
+the whole DNA sequence. Shotgun sequencing was utilized in the initial 
+sequencing of the human genome since sequencing methods at the time (Sanger
+sequencing) was extremely limited in sequencing length. Following the cloning 
+of the genome into BACs which would provide an idea of the general order of 
+batches of fragments, the clones were shotgun sequenced and ordered according
+to homology and BAC order.
+
+### 2.2
+
+
+While the length of the individual sequenceable fragments decreases in NGS 
+(~300 bp w/ paired-end), NGS greatly increases the # of fragments analyzed at a 
+time (massively parallel sequencing). With Sanger sequencing, you can only 
+sequence one at a time. The cost of an individual Sanger sequencing is lower 
+than an NGS (although it is the opposite for cost/base). So if you do not need 
+to sequence a lot of DNA/RNA, Sanger sequencing would be advantageous.
+
+### 2.3.
+
+Third generation sequencing greatly increases individual read length so it is 
+better for de novo genome assembly. NGS is more suited for high throughput 
+sequencing of small targeted regions. Third generation sequencing can also 
+provide methylation data since it does not depend on amplified DNA. NGS is more 
+affordable than third generation sequencing.
+
+### 2.4.
+
+Paired end sequencing is when you sequence a DNA fragment from both ends. The 
+genome has a lot of repeated sequences which causes issues at assembly. With 
+paired-end sequencing, we know the distance between each read, which eliminates 
+some ambiguity when mapping repetitive sequences when the length of reads is 
+limiting. For example: 
+
+Reference: CGCGCGTAAACAT
+
+Single end reads: CGC, CGC, GTA, AAA, AAA, ACA, CAT 
+
+  Unable to tell the number of CG and A repeats since we don’t know the distance
+  between fragments 
+  
+Paired end reads: CGC###TAA, GTA##CAT, AACAT 
+
+  Able to map sequences since we know the distance and relative order of some 
+  nucleotide sequences with even less reads.
+
+### 2.5.
+
+Hybrid sequencing is when you use multiple sequencing technologies. It allows 
+you to optimize sequencing based on the pros and cons of different methods. One 
+example of the use of hybrid sequencing is in de novo genome assembly. Although 
+third generation sequencing methods have significantly improved error rates 
+recently, a common strategy is to gather very long reads with third gen 
+sequencing to help with assembly and smaller reads with illumina sequencing to 
+increase sequence accuracy.
+
+## 3. Precision Recall Analysis
+
+### 3.1 Data import and cross-checks
+
+#### 3.1.1.
+
+```{r}
+# genes that are differentially expressed in your experiment
+diff_ex_orfs <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw1data/differentially_expressed_orfs.txt", 
+    col.names ="orf")
+  )
+
+# genes known to be involved in a specific biological process
+pos_orfs <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw1data/positive_orfs.txt", 
+    col.names ="orf"
+    )
+  )
+
+# tibble with repeated ORFs with # of occurences
+repeated = diff_ex_orfs %>% 
+  group_by(orf) %>% 
+  summarize(occurence = n()) %>% 
+  filter(occurence > 1) %>% 
+  print()
+
+# tibble with unique ORFs
+diff_ex_orfs = diff_ex_orfs %>% 
+  unique()
+```
+
+#### 3.1.2.
+
+```{r}
+pos_length = nrow(pos_orfs)
+print(paste(
+  "The list of genes known to be in the specific biological process is", 
+  pos_length
+  ))
+
+# filters for orfs both known + and differentially expressed and counts rows
+pos_ex_orfs = diff_ex_orfs %>% 
+  filter(orf %in% pos_orfs$orf) 
+print(paste(
+  nrow(pos_ex_orfs), 
+  "of them appear in the differentially expressed list"
+  ))
+```
+
+### 3.2 Precision-recall analysis
+
+```{r}
+# assigns a classification score to each distinct gene based on order
+# assigns + or - to each gene based on if it is in pos_orfs
+score = c(nrow(diff_ex_orfs) : 1)
+classification = c()
+diff_ex_orfs <- diff_ex_orfs %>% 
+  mutate(score) %>% 
+  mutate(classification)
+
+for (i in 1 : nrow(diff_ex_orfs)) {
+  if (diff_ex_orfs$orf[i] %in% pos_orfs$orf) {
+    diff_ex_orfs$classification[i] = "+"
+  } else {
+    diff_ex_orfs$classification[i] = "-"
+  }
+}
+
+collect(diff_ex_orfs)
+
+# recall = TP / (FN + TP) 
+# precision = TP / (TP + FP) 
+# initialize empty vectors for recall and precision
+recall = c()
+precision = c()
+
+# for each position in ranked list
+for (i in 1: nrow(diff_ex_orfs)) {
+  threshold = diff_ex_orfs$score[i]
+  # calculates recall for each gene
+  TP = diff_ex_orfs %>% 
+    filter(classification == "+") %>% 
+    filter(score >= threshold) %>%
+    nrow() 
+  recall[i] = TP / nrow(pos_ex_orfs)
+  # calculates precision for each gene
+  precision[i] = TP / nrow(diff_ex_orfs %>% filter(score >= threshold))
+} 
+
+diff_ex_orfs <- diff_ex_orfs %>% 
+  mutate(recall = recall) %>% 
+  mutate(precision = precision)
+
+```
+
+```{r, fig.width=5, fig.height=5}
+# plots precision vs recall
+plot(
+  diff_ex_orfs$recall, 
+  diff_ex_orfs$precision, 
+  type = "l",
+  main = "Precision Recall Plot",
+  ylab = "Precision", 
+  xlab = "Recall"
+)
+```
+
+#### 3.2.1.
+
+The precision of the data at 10% recall is 100% according to the plot above.
+
+#### 3.2.2.
+
+The plot roughly shows an inverse relationship between precision and recall. The
+curve is quite jagged, increasing and decreasing quite sharply, which is more 
+pronounced at lower recall. This seems to show that the data is a little 
+unbalanced (between the + and - groups).
+
+#### 3.2.3.
+
+You can measure this by looking at the AUC of the PR curve; a perfect model 
+would have high precision at high recall. Also, as described above, the data set
+seems to have some bias between the + and - groups. I would conclude that the 
+experiment could be redesigned to do a better job of recapitulating previously 
+known biology by addressing these issues.
+
+## 4. Study Design & Exploratory Data Analysis
+
+### 4.1
+
+Randomization and control are important in good experimental design. There is 
+already an equal sample size for disease and healthy individuals. When 
+generating the gene expression data, I would process an equal amount of the two 
+groups. I would want to make sure that there is a varied selection at each set 
+of samples to minimize other confounding variables such as sex, age or drugs 
+being taken. All batches should be analyzed at similar conditions (e.g. same 
+time after thawing) with the same reagents (same lot #).
+
+### 4.2
+
+```{r}
+expression <- as_tibble(
+  read.table(
+    "/Users/senacetin/Downloads/hw1data/expression-study.txt", 
+    header = TRUE
+    )
+  )
+
+# plots transcript level distribution among healthy individuals
+control_expression = expression %>% 
+  filter(status == "healthy")
+
+# plots each gene
+for(i in 1:5) {
+  hist(
+    pull(control_expression[,i]), 
+    freq = FALSE, 
+    main = 
+      paste("Transcript Level Distribution in Healthy Individuals of Gene", i), 
+    xlab = "Transcript Level"
+    )
+}
+
+# plots transcript level distribution among individuals with UC
+UC_expression = expression %>% 
+  filter(status == "disease")
+
+# plots each gene
+for(i in 1:5) {
+  hist(
+    pull(UC_expression[,i]), 
+    freq = FALSE, 
+    main = 
+      paste("Transcript Level Distribution in Individuals with UC of Gene", i), 
+    xlab = "Transcript Level"
+    )
+}
+```
+
+### 4.3
+
+While none of the genes except 3 follow a normal distribution perfectly, genes 2
+and 4 would be especially problematic because of their transcript level of 20,
+which is much greater than all of the other data points.
+
+## 5. Probability & Sequencing
+
+### 5.1
+
+```{r}
+g_size = 10000000
+reads = 100000
+# calculates coverage
+l = (200 * reads)/ g_size
+
+print(paste("The expected coverage is", l, "x"))
+```
+
+### 5.2
+
+```{r}
+# x = x and y = lambda
+pois = function(x, y) {
+  return(((y^x) * exp(-y)) / factorial(x))
+}
+
+# P(x >= 1) (at least one read) = 1 - P(x = 0) (1 - no reads)
+P_oneread = 1 - pois(0, l)
+print(paste(
+  "The probability that a base is covered by at least one sequencing read is",
+  P_oneread
+  ))
+```
+
+### 5.3
+
+```{r}
+genome = c(1 : g_size)
+
+possible_start = c(1 : (g_size - 199))
+
+simulation = function(trials) {
+  probabilities = c()
+  for (i in 1 : trials) {
+    # sample 100,000 starting points from possible ones with replacement
+    start_read = sample(possible_start, 100000, replace = TRUE)
+  
+    # append all nucleotide reads to one vector 
+    allreads = c()
+    allreads = c(
+      allreads, 
+      unlist(lapply(start_read, function(x) c(x : (x + 199)))))
+  
+    # divide # unique reads by g_size to obtain % covered
+    covered = length(unique(allreads)) / g_size
+    probabilities = c(probabilities, covered)
+  }
+  return(mean(probabilities))
+}
+```
+
+```{r}
+simulation_500 = simulation(500)
+```
+
+```{r}
+print(paste("The simulated probability is", simulation_500))
+```
+
+### 5.4
+
+The simulated probability from part 3 is only slightly lower than the analytic 
+probability calculation from part 2. The two probabilities are very similar.
+
+### 5.5
+
+```{r}
+simulation_results = tibble(
+  replicates = numeric(),
+  average = numeric(),
+  stdev = numeric()
+)
+
+replicate = 0
+# for 100, 200, 300, 400 and 500 replicates
+for (i in 1:5) {
+  replicate = replicate + 100
+  prob = c()
+
+  # five times each replicate
+  for (j in 1:5) {
+    prob = c(prob, simulation(replicate))
+  }
+  
+  # store replicate number, avg and stdev
+  simulation_results <- simulation_results %>% 
+    add_row(replicates = replicate, average = mean(prob), stdev = sd(prob)) 
+}
+```
+
+```{r}
+#plots average probability vs. the number of simulation replicates 
+plot(
+  simulation_results$replicates, 
+  simulation_results$average, 
+  type = "l",
+  ylim = c(0,1),
+  main = "Average probability that base is covered by 1 or more reads",
+  ylab = "Average probability",
+  xlab = "Simulation Replicates",
+  )
+
+#plots standard deviation of probability vs number of simulation replicates
+plot(
+  simulation_results$replicates, 
+  simulation_results$stdev, 
+  type = "l",
+  ylim = c(0,1),
+  main = "Average Standard Deviation that base is covered by 1 or more reads",
+  ylab = "Average Standard Deviation",
+  xlab = "Simulation Replicates"
+  )
+
+```
+
+### 5.6
+
+Plot 1: While there is a decrease of around 0.0005% at the 300 replicate 
+simulation, there does not seem to be a trend between the number of replicates
+and the calculated average. Overall, the average probability does not change 
+dramatically between simulation replicates. Plot 2: Again, while there is an 
+increase and decrease in the standard deviation at the 200 and 400 replicate 
+simulations respectively, increasing the number of replicates does not change 
+the standard deviations dramatically between the simulations.
